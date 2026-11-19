@@ -79,9 +79,10 @@ Add the following variables in the service’s **Environment Variables** section
 | `TOKEN` | Yes | The Coolify API token, for example `1jHre455...` . Do not add quotes. Mark it as **secret** and lock it. |
 | `UUIDS` | Yes | Space-separated Coolify resource UUIDs, for example `uuid1 uuid2 uuid3`. Only lowercase letters and digits are accepted. |
 | `CRON_SCHEDULE` | No | A five-field cron expression in the configured timezone. Default: `0 0 * * *` (daily at midnight). |
+| `FORCE` | No | `true` or `false`, sent as `force` in the deploy request. Per the Coolify API reference, `force` is a rebuild without cache. Default: `false`. |
 |`TZ`|No|The timezone associated to the cronjob. Defaults: `Europe/Paris`|
 
-You can change `UUIDS` or `CRON_SCHEDULE` later by editing the environment variables and restarting the service; no `docker-compose.yml` change is required.
+You can change `UUIDS`, `CRON_SCHEDULE` or `FORCE` later by editing the environment variables and restarting the service; no `docker-compose.yml` change is required.
 
 ### 5. Connect to the Coolify network
 
@@ -97,16 +98,17 @@ Deploy the service.
 
 At startup the container:
 
-1. checks `TOKEN`, `UUIDS` and `CRON_SCHEDULE`, and exits if one is invalid (see below);
+1. checks `TOKEN`, `UUIDS`, `CRON_SCHEDULE` and `FORCE`, and exits if one is invalid (see below);
 2. installs `curl` and `tzdata` (`tzdata` makes `TZ` effective). If the install fails, `set -e` exits and `restart: unless-stopped` retries;
-3. writes the token and UUIDs to `/etc/redeploy.token` and `/etc/redeploy.uuids` (mode 600), since cron jobs do not inherit the container environment;
-4. writes `/tmp/redeploy.sh`: one `POST /api/v1/deploy` with `{"uuid": ..., "force": false}` per UUID, 10s connect / 60s total timeout so a stalled API cannot hang the job;
+3. writes the token, UUIDs and force flag to `/etc/redeploy.token`, `/etc/redeploy.uuids` and `/etc/redeploy.force` (mode 600), since cron jobs do not inherit the container environment;
+4. writes `/tmp/redeploy.sh`: one `POST /api/v1/deploy` with `{"uuid": ..., "force": $FORCE}` per UUID, 10s connect / 60s total timeout so a stalled API cannot hang the job;
 5. installs the crontab `$CRON_SCHEDULE` and `exec`s `crond` as PID 1, so it stops cleanly on SIGTERM.
 
 | Startup error | Cause |
 |---|---|
 | `TOKEN and UUIDS are required` | one of them is empty |
 | `UUIDS must be space-separated UUIDs (letters/digits only)` | comma, quote, newline, `*`… in `UUIDS`. Caught at startup instead of at the next run, and keeps each UUID safe to put in the JSON body |
+| `FORCE must be true or false, got '...'` | `FORCE` is set to anything else (`1`, `yes`, `True`…); it goes into the JSON body unquoted, so only the two literals are accepted |
 | `CRON_SCHEDULE must have 5 fields, got N (check it on https://crontab.guru)` | wrong field count. With a 6-field (seconds-first) expression, crond takes the 6th field as the start of the command (e.g. `* /tmp/redeploy.sh`), so the job never runs and nothing marks the container unhealthy. Out-of-range values (`0 25 * * *`) are not caught: check on [crontab.guru](https://crontab.guru) |
 
 ## Health
@@ -138,11 +140,11 @@ docker exec cronjob-<service-uuid> /tmp/redeploy.sh
 
 ## Pitfalls (all hit while building this)
 
-- **Escape `$` as `$$`** in the compose `command:`. Compose interpolates `$VAR` before the shell runs, which turns variables blank. The only single `$` are `${TOKEN}`, `${UUIDS}` and `${CRON_SCHEDULE:-0 0 * * *}` under `environment:`, where substitution is wanted.
+- **Escape `$` as `$$`** in the compose `command:`. Compose interpolates `$VAR` before the shell runs, which turns variables blank. The only single `$` are `${TOKEN}`, `${UUIDS}`, `${CRON_SCHEDULE:-0 0 * * *}` and `${FORCE:-false}` under `environment:`, where substitution is wanted.
 - **Never put the token in the crontab line.** `crond` logs the full command at level 8, which leaks the token. Coolify tokens contain `|`, which the shell also reads as a pipe. The script reads the token from `/etc/redeploy.token` instead.
 - **`-l` is verbosity, lower means more verbose.** `-l 2` prints debug output (schedule bitmaps, per-minute wakeups). Use `-l 8`.
 - **`container_name` is ignored by Coolify**, which names the container `cronjob-<service uuid>`.
-- **`HTTP 000`** means the container cannot reach `coolify:8080` (see Setup step 4), or the API did not answer within the timeout. **`HTTP 401`** (`Unauthenticated.`) means the token is wrong or revoked. **`HTTP 403`** means the token lacks the `deploy` ability (`Missing required permissions: deploy`), API Access is disabled (`API is disabled.`), or the container's IP is not in **Allowed IPs** (`You are not allowed to access the API.`, see Setup step 1); the logged body tells which. **`HTTP 404`** (`No resources found.`) means the UUID does not exist in the token's team.
+- **`HTTP 000`** means the container cannot reach `coolify:8080` (see Setup step 5), or the API did not answer within the timeout. **`HTTP 401`** (`Unauthenticated.`) means the token is wrong or revoked. **`HTTP 403`** means the token lacks the `deploy` ability (`Missing required permissions: deploy`), API Access is disabled (`API is disabled.`), or the container's IP is not in **Allowed IPs** (`You are not allowed to access the API.`, see Setup step 1); the logged body tells which. **`HTTP 404`** (`No resources found.`) means the UUID does not exist in the token's team.
 
 ## License
 
