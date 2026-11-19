@@ -28,14 +28,70 @@ The trade-off: Watchtower redeploys only when an image changed, while this servi
 
 ## Setup
 
-1. In Coolify **Settings** (Advanced), enable **API Access** (it is off by default; if you restrict **Allowed IPs**, include the Docker network the container runs in). Then create an API token (**Keys & Tokens → API tokens**) with the **deploy** and **read** abilities. The job needs `deploy`; the healthcheck needs `read` (for `GET /api/v1/version`), which also confirms the token is valid. `write` and `delete` are not needed.
-2. In Coolify, create a service from `docker-compose.yml`.
-3. In the service **Environment Variables**, set all required variables (the container refuses to start without them):
-   - `TOKEN`: the bare token from step 1, such as `2|abc...`, with no quotes (mark it secret, lock it).
-   - `UUIDS`: the UUIDs of the resources to redeploy, separated by spaces (e.g. `uuid1 uuid2 uuid3`). Coolify UUIDs are lowercase letters and digits; the container refuses any other character. Changing the list later only needs an env edit and a restart, not a compose edit.
-   - `CRON_SCHEDULE` (optional): a 5-field cron expression in the `TZ` timezone (Europe/Paris). Defaults to `0 0 * * *` (every day at midnight). Changing it needs a restart.
-4. In the service settings, enable **Connect to Predefined Network**. Without it the container cannot resolve `coolify:8080` and every call fails with `HTTP 000`.
-5. Deploy the service.
+### 1. Enable Coolify API access
+
+In Coolify, open **Settings → Advanced** and enable **API Access**.
+
+It is disabled by default. If you restrict **Allowed IPs**, add the Docker subnet used by the container.
+
+<details>
+<summary>Find your Docker network subnets</summary>
+
+```bash
+docker network ls --format '{{.Name}}' \
+  | xargs -r docker network inspect \
+  --format '{{range .IPAM.Config}}{{.Subnet}}
+{{end}}' \
+  | sed '/^[[:space:]]*$/d' \
+  | sort -u \
+  | paste -sd,
+```
+
+This prints all configured Docker subnets as a comma-separated CIDR list, for example:
+
+```text
+172.17.0.0/16,172.18.0.0/16
+```
+
+</details>
+
+### 2. Create an API token
+
+Go to **Keys & Tokens → API tokens** and create a token with:
+
+| Ability | Required? | Purpose |
+|---|---:|---|
+| `deploy` | Yes | Redeploys the configured resources |
+| `read` | Yes | Lets the job call `GET /api/v1/version` and validate the token |
+| `write` | No | Not required |
+| `delete` | No | Not required |
+
+### 3. Create the service
+
+In Coolify, create a new service from the repository’s `docker-compose.yml`.
+
+### 4. Configure environment variables
+
+Add the following variables in the service’s **Environment Variables** section. The container will not start if a required variable is missing.
+
+| Variable | Required | Value |
+|---|---|---|
+| `TOKEN` | Yes | The Coolify API token, for example `1jHre455...` . Do not add quotes. Mark it as **secret** and lock it. |
+| `UUIDS` | Yes | Space-separated Coolify resource UUIDs, for example `uuid1 uuid2 uuid3`. Only lowercase letters and digits are accepted. |
+| `CRON_SCHEDULE` | No | A five-field cron expression in the configured timezone. Default: `0 0 * * *` (daily at midnight). |
+|`TZ`|No|The timezone associated to the cronjob. Defaults: `Europe/Paris`|
+
+You can change `UUIDS` or `CRON_SCHEDULE` later by editing the environment variables and restarting the service; no `docker-compose.yml` change is required.
+
+### 5. Connect to the Coolify network
+
+In the service settings, enable **Connect to Predefined Network**.
+
+Without this, the container cannot resolve `coolify:8080`, and API calls fail with `HTTP 000`.
+
+### 6. Deploy
+
+Deploy the service.
 
 ## How it works
 
@@ -55,7 +111,7 @@ At startup the container:
 
 ## Health
 
-The healthcheck calls `GET /api/v1/version` every minute with the same token as the job. Coolify shows the service as **unhealthy** when curl is missing, `coolify:8080` is unreachable, or the token is rejected, which are the cases where the next scheduled run would fail. It is also briefly unhealthy while Coolify itself restarts or upgrades. To see why it is unhealthy:
+The healthcheck calls `GET /api/v1/version` every minute with the same token as the job. Coolify shows the service as **unhealthy** when curl is missing, `coolify:8080` is unreachable, or the token is rejected, which are the cases where the next scheduled run would fail. It is also briefly unhealthy while Coolify itself restarts or upgrades. To see why it is unhealthy, use this command and replace `<service-uuid>` with the UUID of the redeployer service you created:
 
 ```
 docker inspect cronjob-<service-uuid> --format '{{json .State.Health}}'
